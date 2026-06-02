@@ -72,3 +72,28 @@ htmlcov/
 
 # Docker
 *.pid
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Models (binary files - too large for GitHub)
+*.pkl
+*.joblib
+models/
+!models/.gitkeep
+
+# Data files
+data/raw/*.csv
+data/processed/*.csv
+!data/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,39 @@
+# Core data science
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# Model tracking
+mlflow>=2.5.0
+
+# API Development (Task 6)
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code quality
+flake8>=6.0.0
+
+# Data validation
+great-expectations>=0.17.0
+
+# Feature engineering
+feature-engine>=1.6.0
+
+# Visualization (for notebooks)
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# XGBoost (optional but recommended)
+xgboost>=1.7.0
+
+# Utilities
+python-dotenv>=1.0.0
+pyyaml>=6.0
+joblib>=1.3.0

@@ -1,27 +1,29 @@
 """
-Data Processing Pipeline for Credit Risk Model - Task 3
+Data Processing Pipeline for Credit Risk Model - Tasks 3 & 4
 
-This script transforms raw transaction data into a model-ready dataset by performing:
-
+Task 3 - Feature Engineering:
 1. Aggregate Features - Customer-level RFM metrics
 2. Extract Time Features - Hour, Day, Month, Year from timestamps
 3. Encode Categorical Variables - One-hot and label encoding
 4. Handle Missing Values - Median imputation for numerical, mode for categorical
 5. Normalize/Standardize Features - StandardScaler for numerical features
-6. WOE Transformation - Weight of Evidence for credit scoring (using xverse)
+
+Task 4 - Proxy Target Variable Engineering:
+6. K-Means Clustering on RFM metrics to identify high-risk customers
 
 Author: Bati Bank Analytics Team
-Date: June 1, 2026
+Date: June 2, 2026
 """
 
 import pandas as pd
 import numpy as np
 import os
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.cluster import KMeans
 
 
 # ============================================
-# 1. CREATE AGGREGATE FEATURES
+# TASK 3: FEATURE ENGINEERING FUNCTIONS
 # ============================================
 
 def create_aggregate_features(df):
@@ -33,6 +35,7 @@ def create_aggregate_features(df):
     - Average Transaction Amount: Average transaction amount per customer (positive only)
     - Transaction Count: Number of transactions per customer (all transactions)
     - Standard Deviation of Transaction Amounts: Variability per customer (positive only)
+    - Recency: Days since last transaction
     """
     
     data = df.copy()
@@ -70,18 +73,25 @@ def create_aggregate_features(df):
         'StdDevTransactionAmount': std_amount.values
     })
     
+    # Calculate Recency (days since last transaction)
+    if 'TransactionStartTime' in data.columns:
+        data['TransactionStartTime'] = pd.to_datetime(data['TransactionStartTime'])
+        last_transaction = data.groupby('CustomerId')['TransactionStartTime'].max()
+        reference_date = data['TransactionStartTime'].max()
+        recency = (reference_date - last_transaction).dt.days
+        recency = recency.reindex(all_customers, fill_value=365)
+        customer_features['Recency'] = recency.values
+    else:
+        customer_features['Recency'] = customer_features['TransactionCount'].rank(ascending=False)
+    
     customer_features = customer_features.sort_values('CustomerId').reset_index(drop=True)
     
     print("   ✅ Aggregate features created")
     print(f"      - {len(customer_features)} customers")
-    print(f"      - Features: TotalTransactionAmount, AverageTransactionAmount, TransactionCount, StdDevTransactionAmount")
+    print(f"      - Features: TotalAmount, AvgAmount, Count, StdDev, Recency")
     
     return customer_features
 
-
-# ============================================
-# 2. EXTRACT TIME FEATURES
-# ============================================
 
 def extract_time_features(df):
     """
@@ -115,10 +125,6 @@ def extract_time_features(df):
     return data
 
 
-# ============================================
-# 3. ENCODE CATEGORICAL VARIABLES
-# ============================================
-
 def encode_categorical_features(df):
     """
     Encode categorical variables into numerical format.
@@ -127,7 +133,6 @@ def encode_categorical_features(df):
     - One-Hot Encoding: For ProductCategory (creates binary columns)
     - Label Encoding: For ChannelId (assigns unique integer to each channel)
     """
-    
     data = df.copy()
     
     # One-Hot Encoding for ProductCategory
@@ -153,10 +158,6 @@ def encode_categorical_features(df):
     
     return data
 
-
-# ============================================
-# 4. HANDLE MISSING VALUES
-# ============================================
 
 def handle_missing_values(df):
     """
@@ -199,13 +200,12 @@ def handle_missing_values(df):
     return data
 
 
-# ============================================
-# 5. NORMALIZE/STANDARDIZE NUMERICAL FEATURES
-# ============================================
-
 def scale_numerical_features(df, method='standardize'):
     """
     Scale numerical features to bring them onto a similar scale.
+    
+    Parameters:
+    - method: 'standardize' (mean=0, std=1) or 'normalize' (range [0,1])
     """
     
     data = df.copy()
@@ -230,153 +230,153 @@ def scale_numerical_features(df, method='standardize'):
 
 
 # ============================================
-# 6. WOE TRANSFORMATION (using xverse)
+# TASK 4: PROXY TARGET VARIABLE ENGINEERING
+# Using K-Means Clustering on RFM Metrics
 # ============================================
 
-def apply_woe_transformation(df, target_column='Target_Binary', feature_columns=None):
+def create_proxy_target_kmeans(customer_df, random_state=42):
     """
-    Apply Weight of Evidence (WOE) transformation to categorical features.
-    """
+    Create proxy target variable using K-Means clustering on RFM metrics.
     
-    try:
-        from xverse.transformer import WOE
-    except ImportError:
-        print("   ⚠️ xverse not installed. Run: pip install xverse")
-        return df, pd.DataFrame()
+    This method segments customers into 3 groups based on their RFM profile
+    and identifies the high-risk cluster (least engaged customers).
     
-    data = df.copy()
+    Parameters:
+    - customer_df: DataFrame with RFM features (TransactionCount, TotalTransactionAmount, Recency)
+    - random_state: Seed for reproducibility
     
-    if target_column not in data.columns:
-        print(f"   ⚠️ Target column '{target_column}' not found. Skipping WOE.")
-        return data, pd.DataFrame()
-    
-    # Select categorical columns
-    if feature_columns is None:
-        feature_columns = data.select_dtypes(include=['object']).columns.tolist()
-        feature_columns = [col for col in feature_columns if col not in [target_column, 'CustomerId']]
-    
-    if len(feature_columns) == 0:
-        print("   ⚠️ No categorical features found for WOE transformation.")
-        return data, pd.DataFrame()
-    
-    print(f"   📊 Applying WOE transformation to {len(feature_columns)} features:")
-    for col in feature_columns:
-        print(f"      - {col}")
-    
-    # Fill missing values
-    for col in feature_columns:
-        if data[col].isnull().sum() > 0:
-            data[col] = data[col].fillna('missing')
-    
-    X = data[feature_columns].copy()
-    y = data[target_column].copy()
-    
-    woe_transformer = WOE()
-    woe_transformer.fit(X, y)
-    
-    X_woe = woe_transformer.transform(X)
-    iv_df = woe_transformer.iv_df.copy()
-    
-    def interpret_iv(value):
-        if value < 0.02:
-            return "Not useful"
-        elif value < 0.1:
-            return "Weak"
-        elif value < 0.3:
-            return "Medium"
-        elif value < 0.5:
-            return "Strong"
-        else:
-            return "Suspicious"
-    
-    iv_df['Predictiveness'] = iv_df['Information_Value'].apply(interpret_iv)
-    
-    print(f"\n   ✅ WOE transformation complete")
-    print(f"   📊 Information Value (IV) for feature selection:")
-    
-    for _, row in iv_df.iterrows():
-        iv_value = row['Information_Value']
-        var_name = row['Variable_Name']
-        strength = row['Predictiveness']
-        
-        if iv_value >= 0.1:
-            indicator = "✅ KEEP"
-        elif iv_value >= 0.02:
-            indicator = "⚠️  MAYBE"
-        else:
-            indicator = "❌ DROP"
-        
-        print(f"      {indicator} {var_name}: {iv_value:.4f} ({strength})")
-    
-    # Drop original categorical columns and add WOE columns
-    for col in feature_columns:
-        if col in data.columns:
-            data = data.drop(columns=[col])
-    
-    for col in X_woe.columns:
-        data[col] = X_woe[col]
-    
-    return data, iv_df
-
-
-# ============================================
-# PROXY TARGET CREATION
-# ============================================
-
-def create_proxy_target(customer_df):
-    """
-    Create proxy target variable using RFM scoring.
+    Returns:
+    - DataFrame with added 'is_high_risk' column
+    - Cluster analysis summary
     """
     
     data = customer_df.copy()
     
-    print("\n📌 Creating Proxy Target Variable (RFM-based)")
+    print("\n" + "=" * 70)
+    print("TASK 4: PROXY TARGET VARIABLE ENGINEERING (K-MEANS CLUSTERING)")
+    print("=" * 70)
+    
+    # Step 1: Prepare RFM features
+    print("\n📌 STEP 1: Preparing RFM Features")
     print("-" * 40)
     
-    data['R_rank'] = data['TransactionCount'].rank(ascending=False)
-    data['F_rank'] = data['TransactionCount'].rank(ascending=True)
-    data['M_rank'] = data['TotalTransactionAmount'].rank(ascending=True)
+    rfm_features = ['Recency', 'TransactionCount', 'TotalTransactionAmount']
+    available_features = [f for f in rfm_features if f in data.columns]
     
-    data['R_score'] = data['R_rank'] / data['R_rank'].max()
-    data['F_score'] = data['F_rank'] / data['F_rank'].max()
-    data['M_score'] = data['M_rank'] / data['M_rank'].max()
+    print(f"   RFM features for clustering: {available_features}")
     
-    data['RFM_Score'] = (data['R_score'] + data['F_score'] + data['M_score']) / 3
+    # Step 2: Scale features
+    print("\n📌 STEP 2: Scaling RFM Features")
+    print("-" * 40)
     
-    high_threshold = data['RFM_Score'].quantile(0.80)
-    low_threshold = data['RFM_Score'].quantile(0.20)
+    scaler = StandardScaler()
+    X_rfm = scaler.fit_transform(data[available_features])
+    print(f"   ✅ Features scaled (mean=0, std=1)")
     
-    data['Target'] = 'middle'
-    data.loc[data['RFM_Score'] >= high_threshold, 'Target'] = 'good'
-    data.loc[data['RFM_Score'] <= low_threshold, 'Target'] = 'bad'
+    # Step 3: K-Means clustering
+    print("\n📌 STEP 3: K-Means Clustering (3 segments)")
+    print("-" * 40)
     
-    data['Target_Binary'] = (data['Target'] == 'bad').astype(int)
+    kmeans = KMeans(n_clusters=3, random_state=random_state, n_init=10)
+    data['cluster'] = kmeans.fit_predict(X_rfm)
     
-    good_count = (data['Target'] == 'good').sum()
-    bad_count = (data['Target'] == 'bad').sum()
+    print(f"   ✅ K-Means clustering complete")
+    print(f"   Cluster distribution:")
+    for cluster in sorted(data['cluster'].unique()):
+        count = (data['cluster'] == cluster).sum()
+        pct = count / len(data) * 100
+        print(f"      Cluster {cluster}: {count} customers ({pct:.1f}%)")
     
-    print(f"   ✅ Proxy target created")
-    print(f"      - Good customers (low risk, Target=0): {good_count}")
-    print(f"      - Bad customers (high risk, Target=1): {bad_count}")
-    print(f"      - Middle segment (excluded): {len(data) - good_count - bad_count}")
+    # Step 4: Analyze clusters
+    print("\n📌 STEP 4: Analyzing Cluster Profiles")
+    print("-" * 40)
     
-    return data
+    cluster_profiles = data.groupby('cluster')[available_features].mean()
+    
+    print("\n   Cluster Profiles (mean values):")
+    for cluster in cluster_profiles.index:
+        values = []
+        for col in available_features:
+            val = cluster_profiles.loc[cluster, col]
+            if col == 'Recency':
+                values.append(f"{col}={val:.1f} days")
+            elif col == 'TransactionCount':
+                values.append(f"{col}={val:.1f} txns")
+            else:
+                values.append(f"{col}={val:.0f}")
+        print(f"      Cluster {cluster}: {', '.join(values)}")
+    
+    # Identify high-risk cluster (lowest engagement)
+    cluster_scores = {}
+    for cluster in cluster_profiles.index:
+        score = 0
+        for col in available_features:
+            if col == 'Recency':
+                rank = cluster_profiles[col].rank(ascending=False).loc[cluster]
+            else:
+                rank = cluster_profiles[col].rank(ascending=True).loc[cluster]
+            score += rank
+        cluster_scores[cluster] = score
+    
+    high_risk_cluster = min(cluster_scores, key=cluster_scores.get)
+    
+    print(f"\n   🎯 High-Risk Cluster Identified: Cluster {high_risk_cluster}")
+    print(f"      (Least engaged - high recency, low frequency, low monetary)")
+    
+    # Step 5: Create binary target
+    print("\n📌 STEP 5: Creating 'is_high_risk' Binary Target")
+    print("-" * 40)
+    
+    data['is_high_risk'] = (data['cluster'] == high_risk_cluster).astype(int)
+    
+    high_risk_count = data['is_high_risk'].sum()
+    low_risk_count = len(data) - high_risk_count
+    
+    print(f"   ✅ Binary target created")
+    print(f"      - High Risk (is_high_risk = 1): {high_risk_count} ({high_risk_count/len(data)*100:.1f}%)")
+    print(f"      - Low Risk (is_high_risk = 0): {low_risk_count} ({low_risk_count/len(data)*100:.1f}%)")
+    
+    # Step 6: Summary statistics
+    print("\n📌 STEP 6: Cluster Summary Statistics")
+    print("-" * 40)
+    
+    summary = data.groupby('cluster').agg({
+        'TransactionCount': ['count', 'mean'],
+        'TotalTransactionAmount': ['mean'],
+        'is_high_risk': 'first'
+    }).round(2)
+    print(summary)
+    
+    # Drop temporary cluster column
+    data = data.drop(columns=['cluster'])
+    
+    return data, cluster_profiles, high_risk_cluster
 
 
 # ============================================
-# MAIN PIPELINE
+# MAIN PIPELINE - TASKS 3 & 4
 # ============================================
 
 def run_data_pipeline(raw_data_path='data/raw/data.csv', 
                       processed_data_path='data/processed/',
-                      scaling_method='standardize',
-                      apply_woe=True):
+                      scaling_method='standardize'):
     """
-    Run the complete data processing pipeline.
+    Run the complete data processing pipeline (Tasks 3 & 4).
+    
+    Steps:
+    Task 3:
+    1. Extract time features from timestamp
+    2. Encode categorical variables
+    3. Handle missing values
+    4. Create aggregate features (customer-level)
+    5. Scale numerical features
+    
+    Task 4:
+    6. K-Means clustering on RFM to create is_high_risk target
     """
     
     print("=" * 70)
-    print("DATA PROCESSING PIPELINE - TASK 3")
+    print("DATA PROCESSING PIPELINE - TASKS 3 & 4")
     print("=" * 70)
     
     # Load raw data
@@ -384,6 +384,13 @@ def run_data_pipeline(raw_data_path='data/raw/data.csv',
     print("-" * 40)
     df = pd.read_csv(raw_data_path)
     print(f"   Raw data shape: {df.shape[0]:,} rows, {df.shape[1]} columns")
+    
+    # ============================================
+    # TASK 3: FEATURE ENGINEERING
+    # ============================================
+    print("\n" + "=" * 70)
+    print("TASK 3: FEATURE ENGINEERING")
+    print("=" * 70)
     
     # STEP 1: Extract Time Features
     print("\n📌 STEP 1: Extract Time Features")
@@ -400,7 +407,7 @@ def run_data_pipeline(raw_data_path='data/raw/data.csv',
     print("-" * 40)
     df = handle_missing_values(df)
     
-    # STEP 4: Create Aggregate Features
+    # STEP 4: Create Aggregate Features (customer-level)
     print("\n📌 STEP 4: Create Aggregate Features")
     print("-" * 40)
     customer_features = create_aggregate_features(df)
@@ -410,48 +417,49 @@ def run_data_pipeline(raw_data_path='data/raw/data.csv',
     print("-" * 40)
     customer_features_scaled = scale_numerical_features(customer_features, method=scaling_method)
     
-    # STEP 6: Create Proxy Target
-    print("\n📌 STEP 6: Create Proxy Target")
-    print("-" * 40)
-    customer_features_with_target = create_proxy_target(customer_features_scaled)
+    # ============================================
+    # TASK 4: PROXY TARGET ENGINEERING
+    # ============================================
+    print("\n" + "=" * 70)
+    print("TASK 4: PROXY TARGET ENGINEERING")
+    print("=" * 70)
     
-    # STEP 7: Apply WOE Transformation (optional)
-    iv_df = None
-    if apply_woe:
-        print("\n📌 STEP 7: Apply WOE Transformation")
-        print("-" * 40)
-        customer_features_with_target, iv_df = apply_woe_transformation(
-            customer_features_with_target, 
-            target_column='Target_Binary'
-        )
+    customer_features_with_target, cluster_profiles, high_risk_cluster = create_proxy_target_kmeans(
+        customer_features_scaled,
+        random_state=42
+    )
     
-    # Save outputs
+    # ============================================
+    # SAVE OUTPUTS
+    # ============================================
     print("\n📁 Saving Processed Data")
     print("-" * 40)
     os.makedirs(processed_data_path, exist_ok=True)
     
+    # Save transaction-level data
     transaction_output = os.path.join(processed_data_path, 'transactions_processed.csv')
     df.to_csv(transaction_output, index=False)
     print(f"   ✅ Saved: {transaction_output}")
     
+    # Save customer-level features with target
     customer_output = os.path.join(processed_data_path, 'customer_features_model_ready.csv')
     customer_features_with_target.to_csv(customer_output, index=False)
     print(f"   ✅ Saved: {customer_output}")
     
-    if iv_df is not None and len(iv_df) > 0:
-        iv_output = os.path.join(processed_data_path, 'information_values.csv')
-        iv_df.to_csv(iv_output, index=False)
-        print(f"   ✅ Saved: {iv_output}")
-    
+    # ============================================
+    # FINAL SUMMARY
+    # ============================================
     print("\n" + "=" * 70)
     print("✅ PIPELINE EXECUTION COMPLETE")
     print("=" * 70)
     print(f"\n📊 Final Model-Ready Dataset:")
     print(f"   - Shape: {customer_features_with_target.shape[0]} customers, {customer_features_with_target.shape[1]} features")
-    print(f"   - WOE applied: {apply_woe}")
+    print(f"   - Target column: is_high_risk")
+    print(f"   - High risk customers (1): {customer_features_with_target['is_high_risk'].sum()}")
+    print(f"   - Low risk customers (0): {len(customer_features_with_target) - customer_features_with_target['is_high_risk'].sum()}")
     print("=" * 70)
     
-    return customer_features_with_target, df, iv_df
+    return customer_features_with_target, df
 
 
 # ============================================
@@ -459,17 +467,9 @@ def run_data_pipeline(raw_data_path='data/raw/data.csv',
 # ============================================
 
 if __name__ == "__main__":
-    model_ready_data, transactions_data, iv_scores = run_data_pipeline(
+    model_ready_data, transactions_data = run_data_pipeline(
         raw_data_path='data/raw/data.csv',
         processed_data_path='data/processed/',
-        scaling_method='standardize',
-        apply_woe=False
-    
+        scaling_method='standardize'
     )
-if __name__ == "__main__":
-   model_ready_data, transactions_data, iv_scores = run_data_pipeline(
-    raw_data_path='data/raw/data.csv',
-        processed_data_path='data/processed/',
-        scaling_method='standardize',
-        apply_woe=False  # Change this from True to False
-    )
+    print("\n🎯 Data processing complete! Ready for model training.")
